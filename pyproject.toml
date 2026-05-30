@@ -1,0 +1,13 @@
+[project]
+name = "safaribooks"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "lxml>=4.1.1",
+    "requests>=2.20.0",
+    "urllib3>=1.26.5",
+    "browser-cookie3>=0.20.1",
+]
+
+[project.optional-dependencies]
+login = ["playwright>=1.40.0", "playwright-stealth>=2.0.0"]

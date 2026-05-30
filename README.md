@@ -23,7 +23,7 @@ Before any usage please read the *O'Reilly*'s [Terms of Service](https://learnin
   * [Example: Use or not the `--kindle` option](#use-or-not-the---kindle-option)
 
 ## Requirements & Setup:
-First of all, it requires `python3` and `pip3` or `pipenv` to be installed.  
+First of all, it requires `python3` (>=3.9) and `pip3` or `uv` to be installed.  
 ```shell
 $ git clone https://github.com/lorenzodifuccia/safaribooks.git
 Cloning into 'safaribooks'...
@@ -31,10 +31,10 @@ Cloning into 'safaribooks'...
 $ cd safaribooks/
 $ pip3 install -r requirements.txt
 
-OR
+OR (recommended, with uv):
 
-$ pipenv install && pipenv shell
-```  
+$ uv sync
+```
 
 The program depends of only two **Python _3_** modules:
 ```python3
