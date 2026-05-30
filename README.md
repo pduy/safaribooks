@@ -22,7 +22,7 @@ Before any usage please read the *O'Reilly*'s [Terms of Service](https://learnin
   * [Example: Use or not the `--kindle` option](#use-or-not-the---kindle-option)
 
 ## Requirements & Setup:
-First of all, it requires `python3` (>=3.9), `pip3` or `uv` to be installed.  
+First of all, it requires `python3` (>=3.9) and `pip3` or `uv` to be installed.  
 ```shell
 $ git clone https://github.com/lorenzodifuccia/safaribooks.git
 Cloning into 'safaribooks'...
