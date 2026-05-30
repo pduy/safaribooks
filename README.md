@@ -6,11 +6,10 @@ Before any usage please read the *O'Reilly*'s [Terms of Service](https://learnin
 <a href='https://ko-fi.com/Y8Y0MPEGU' target='_blank'><img height='80' style='border:0px;height:60px;' src='https://storage.ko-fi.com/cdn/kofi6.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com'/></a>
 
 ## ✨✨ *Attention needed* ✨✨
-- This project is no longer actively maintained.  
-- *Login through `safaribooks` no longer works due to changes in ORLY APIs.*
+- This project is no longer actively maintained.
+- ~~*Login through `safaribooks` no longer works due to changes in ORLY APIs.*~~ **Fixed!** Direct login now works via browser automation (Playwright).
 - *The program needs a major refactor to include new features and integrate new APIs.*
-- **However... it still work for downloading books.**  
-(Use SSO hack: log in via browser, then copy cookies into `cookies.json`, see below and issues. Love ❤️)
+- **It works for downloading books.** Login via `--cred`, `--login`, or `cookies.json`. Love ❤️
 
 ---
 
@@ -41,19 +40,41 @@ The program depends of only two **Python _3_** modules:
 lxml>=4.1.1
 requests>=2.20.0
 ```
+
+For login via `--cred` or `--login`, you also need **Playwright**:
+```shell
+$ uv sync --extra login && uv run playwright install chromium
+```
+
+This enables browser-based login that bypasses O'Reilly's Akamai bot protection.
   
 ## Usage:
 It's really simple to use, just choose a book from the library and replace in the following command:
-  * X-es with its ID, 
-  * `email:password` with your own. 
+  * X-es with its ID.
 
+There are **three ways to authenticate**:
+
+### Option 1: Browser-based login with credentials
+Opens a browser, auto-fills your email/password, and handles 2FA/CAPTCHA interactively:
 ```shell
-$ python3 safaribooks.py --cred "account_mail@mail.com:password01" XXXXXXXXXXXXX
+$ uv run --extra login python safaribooks.py --cred "account_mail@mail.com:password01" XXXXXXXXXXXXX
+```
+
+### Option 2: Interactive browser login
+Opens a browser for you to log in manually (supports SSO, 2FA, etc.):
+```shell
+$ uv run --extra login python safaribooks.py --login XXXXXXXXXXXXX
+```
+
+### Option 3: Cookies file
+If you already have a `cookies.json` from a previous session or from `retrieve_cookies.py`:
+```shell
+$ uv run python safaribooks.py XXXXXXXXXXXXX
 ```
 
 The ID is the digits that you find in the URL of the book description page:  
-`https://www.safaribooksonline.com/library/view/book-name/XXXXXXXXXXXXX/`  
-Like: `https://www.safaribooksonline.com/library/view/test-driven-development-with/9781491958698/`  
+`https://learning.oreilly.com/library/view/book-name/XXXXXXXXXXXXX/`  
+Like: `https://learning.oreilly.com/library/view/code-the-hidden/9780137909261/`  
   
 #### Program options:
 ```shell
@@ -74,8 +95,8 @@ optional arguments:
   --cred <EMAIL:PASS>  Credentials used to perform the auth login on Safari
                        Books Online. Es. ` --cred
                        "account_mail@mail.com:password01" `.
-  --login              Prompt for credentials used to perform the auth login
-                       on Safari Books Online.
+  --login              Open a browser for interactive login to Safari Books
+                       Online.
   --no-cookies         Prevent your session data to be saved into
                        `cookies.json` file.
   --kindle             Add some CSS rules that block overflow on `table` and
@@ -86,9 +107,13 @@ optional arguments:
   --help               Show this help message.
 ```
   
-The first time you use the program, you'll have to specify your Safari Books Online account credentials (look [`here`](/../../issues/15) for special character).  
-The next times you'll download a book, before session expires, you can omit the credential, because the program save your session cookies in a file called `cookies.json`.  
-For **SSO**, please use the `sso_cookies.py` program in order to create the `cookies.json` file from the SSO cookies retrieved by your browser session (please follow [`these steps`](/../../issues/150#issuecomment-555423085)).  
+When using `--cred`, the program opens a browser window, auto-fills your credentials, and waits for you to complete any 2FA/CAPTCHA.  
+When using `--login`, the program opens a browser window for interactive login (supports SSO/2FA).  
+In both cases, session cookies are saved to `cookies.json` for future use — so next time you can run without `--cred` or `--login` until the session expires.
+
+For **SSO/Company/University login**, use `--login` and complete the login flow in the browser.
+
+For the manual **cookies.json** approach, use `retrieve_cookies.py` (see below).  
   
 Pay attention if you use a shared PC, because everyone that has access to your files can steal your session. 
 If you don't want to cache the cookies, just use the `--no-cookies` option and provide all time your credential through the `--cred` option or the more safe `--login` one: this will prompt you for credential during the script execution.
