@@ -10,7 +10,7 @@ except ImportError:
 try:
     import browser_cookie3
 except ImportError:
-    raise ImportError("Please run this program via: uv run --with browser_cookie3 python retrieve_cookies.py")
+    raise ImportError("Please install browser_cookie3: uv sync")
 
 def get_oreilly_cookies():
     cj = browser_cookie3.load()
