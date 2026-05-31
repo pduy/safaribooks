@@ -35,10 +35,11 @@ OR (recommended, with uv):
 $ uv sync
 ```
 
-The program depends of only two **Python _3_** modules:
+The program depends of only three **Python _3_** modules:
 ```python3
 lxml>=4.1.1
 requests>=2.20.0
+click>=8.1.0
 ```
 
 For login via `--cred` or `--login`, you also need **Playwright**:
@@ -49,62 +50,86 @@ $ uv sync --extra login && uv run playwright install chromium
 This enables browser-based login that bypasses O'Reilly's Akamai bot protection.
   
 ## Usage:
-It's really simple to use, just choose a book from the library and replace in the following command:
-  * X-es with its ID.
 
-There are **three ways to authenticate**:
+There are **two commands**: `download` and `search`.
 
-### Option 1: Browser-based login with credentials
-Opens a browser, auto-fills your email/password, and handles 2FA/CAPTCHA interactively:
+### Download a book by ID
+
 ```shell
-$ uv run --extra login python safaribooks.py --cred "account_mail@mail.com:password01" XXXXXXXXXXXXX
+# Using cookies from a previous session:
+$ uv run python safaribooks.py download XXXXXXXXXXXXX
+
+# Using credentials:
+$ uv run --extra login python safaribooks.py --cred "account_mail@mail.com:password01" download XXXXXXXXXXXXX
+
+# Interactive browser login:
+$ uv run --extra login python safaribooks.py --login download XXXXXXXXXXXXX
 ```
 
-### Option 2: Interactive browser login
-Opens a browser for you to log in manually (supports SSO, 2FA, etc.):
+### Search for books
+
 ```shell
-$ uv run --extra login python safaribooks.py --login XXXXXXXXXXXXX
+# Search and interactively pick a book to download:
+$ uv run python safaribooks.py search "machine learning python"
+
+# Search with credentials:
+$ uv run --extra login python safaribooks.py --cred "account_mail@mail.com:password01" search "machine learning python"
+
+# Specify page and results per page:
+$ uv run python safaribooks.py search --page 2 --limit 20 "rust programming"
 ```
 
-### Option 3: Cookies file
-If you already have a `cookies.json` from a previous session or from `retrieve_cookies.py`:
+The search shows results with title, authors, book ID, and year. You can:
+- Enter a **number** to see full details and confirm download
+- Type **`n`** for the next page of results
+- Type **`q`** to quit
+
+### Authentication options
+
+Auth options (`--cred`, `--login`, `--no-cookies`) are specified on the main command, before the subcommand:
+
 ```shell
-$ uv run python safaribooks.py XXXXXXXXXXXXX
+$ uv run python safaribooks.py --cred "email:pass" download 9781491958698
+$ uv run python safaribooks.py --login search "python"
+$ uv run python safaribooks.py --no-cookies download 9781491958698
 ```
 
-The ID is the digits that you find in the URL of the book description page:  
-`https://learning.oreilly.com/library/view/book-name/XXXXXXXXXXXXX/`  
-Like: `https://learning.oreilly.com/library/view/code-the-hidden/9780137909261/`  
-  
-#### Program options:
+### Program options:
 ```shell
 $ python3 safaribooks.py --help
-usage: safaribooks.py [--cred <EMAIL:PASS> | --login] [--no-cookies]
-                      [--kindle] [--preserve-log] [--help]
-                      <BOOK ID>
+Usage: safaribooks.py [OPTIONS] COMMAND [ARGS]...
 
-Download and generate an EPUB of your favorite books from Safari Books Online.
+  Download and generate EPUB books from Safari Books Online.
 
-positional arguments:
-  <BOOK ID>            Book digits ID that you want to download. You can find
-                       it in the URL (X-es):
-                       `https://learning.oreilly.com/library/view/book-
-                       name/XXXXXXXXXXXXX/`
+Options:
+  --cred <EMAIL:PASS>  Credentials for auth login (e.g. "user@mail.com:password01").
+  --login              Open a browser for interactive login.
+  --no-cookies         Prevent saving session data to cookies.json.
+  --help               Show this help message and exit.
 
-optional arguments:
-  --cred <EMAIL:PASS>  Credentials used to perform the auth login on Safari
-                       Books Online. Es. ` --cred
-                       "account_mail@mail.com:password01" `.
-  --login              Open a browser for interactive login to Safari Books
-                       Online.
-  --no-cookies         Prevent your session data to be saved into
-                       `cookies.json` file.
-  --kindle             Add some CSS rules that block overflow on `table` and
-                       `pre` elements. Use this option if you're going to
-                       export the EPUB to E-Readers like Amazon Kindle.
-  --preserve-log       Leave the `info_XXXXXXXXXXXXX.log` file even if there
-                       isn't any error.
-  --help               Show this help message.
+Commands:
+  download  Download a book by its ID and generate an EPUB.
+  search    Search for books on Safari Books Online and download by selection.
+
+$ python3 safaribooks.py download --help
+Usage: safaribooks.py download [OPTIONS] BOOK_ID
+
+  Download a book by its ID and generate an EPUB.
+
+Options:
+  --kindle        Add CSS rules for Kindle compatibility.
+  --preserve-log  Keep the log file even without errors.
+  --help           Show this help message and exit.
+
+$ python3 safaribooks.py search --help
+Usage: safaribooks.py search [OPTIONS] QUERY...
+
+  Search for books on Safari Books Online and download by selection.
+
+Options:
+  --page INTEGER   Page number for search results.
+  --limit INTEGER  Number of results per page.
+  --help           Show this help message and exit.
 ```
   
 When using `--cred`, the program opens a browser window, auto-fills your credentials, and waits for you to complete any 2FA/CAPTCHA.  

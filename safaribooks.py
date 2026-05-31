@@ -7,7 +7,6 @@ import json
 import shutil
 import pathlib
 import logging
-import argparse
 import requests
 import traceback
 from html import escape
@@ -15,6 +14,8 @@ from random import random
 from lxml import html, etree
 from multiprocessing import Process, Queue, Value
 from urllib.parse import urljoin, urlparse
+
+import click
 
 
 PATH = os.path.dirname(os.path.realpath(__file__))
@@ -568,21 +569,25 @@ class SafariBooks:
                 browser.close()
 
         return cookies
-    def __init__(self, args):
-        self.args = args
-        self.display = Display("info_%s.log" % escape(args.bookid))
-        self.display.intro()
-
+    def __init__(self, display=None):
+        """Initialize with a session and optional display. Does NOT perform auth."""
         self.session = requests.Session()
         if USE_PROXY:  # DEBUG
             self.session.proxies = PROXIES
             self.session.verify = False
 
         self.session.headers.update(self.HEADERS)
-
         self.jwt = {}
+        self.display = display
 
-        if not args.cred:
+    def authenticate(self, cred=None, no_cookies=False):
+        """Perform authentication using cookies, browser cookies, --cred, or --login.
+        
+        Args:
+            cred: None (use cookies/browser), [email, password] (--cred), or [None, None] (--login)
+            no_cookies: If True, don't save cookies to file
+        """
+        if not cred:
             # Try browser cookie extraction first (no login needed)
             if not os.path.isfile(COOKIES_FILE):
                 self.display.info("Trying to extract cookies from your browser...")
@@ -590,9 +595,7 @@ class SafariBooks:
                 if cookies and len(cookies) >= 3:
                     self.display.info("Found O'Reilly cookies in browser. Using them.", state=True)
                     self._set_session_cookies(cookies)
-                    if not args.no_cookies:
-                        # Save the raw cookie dict (not session.cookies.get_dict()
-                        # which loses domain info)
+                    if not no_cookies:
                         json.dump(cookies, open(COOKIES_FILE, 'w'))
                     self.display.info("Cookies loaded", state=True)
                 else:
@@ -608,15 +611,20 @@ class SafariBooks:
                 self._set_session_cookies(saved_cookies)
 
         else:
-            # args.cred is either [email, password] from --cred or [None, None] from --login
-            email, password = args.cred
+            # cred is either [email, password] from --cred or [None, None] from --login
+            email, password = cred
             self.display.info("Logging into Safari Books Online...", state=True)
-            self.do_login(email, password)
+            self.do_login(email, password, no_cookies=no_cookies)
             # Cookies are saved inside do_login
 
         self.check_login()
 
-        self.book_id = args.bookid
+    def download(self, book_id, kindle=False, preserve_log=False):
+        """Download a book by ID and create an EPUB."""
+        self.book_id = book_id
+        self.display = Display("info_%s.log" % escape(book_id))
+        self.display.intro()
+
         self.api_url = self.API_V1_TEMPLATE.format(self.book_id)
         self.urn = "urn:orm:book:{}".format(self.book_id)
         self.book_slug = None  # will be set by get_book_info
@@ -656,7 +664,7 @@ class SafariBooks:
         self.images = []
 
         self.display.info("Downloading book contents... (%s chapters)" % len(self.book_chapters), state=True)
-        self.BASE_HTML = self.BASE_01_HTML + (self.KINDLE_HTML if not args.kindle else "") + self.BASE_02_HTML
+        self.BASE_HTML = self.BASE_01_HTML + (self.KINDLE_HTML if not kindle else "") + self.BASE_02_HTML
 
         self.cover = False
         self.get()
@@ -684,14 +692,47 @@ class SafariBooks:
         self.display.info("Creating EPUB file...", state=True)
         self.create_epub()
 
-        if not args.no_cookies:
-            json.dump(self.session.cookies.get_dict(), open(COOKIES_FILE, "w"))
+        if not self.display.in_error and not preserve_log:
+            os.remove(self.display.log_file)
 
         self.display.done(os.path.join(self.BOOK_PATH, self.book_id + ".epub"))
         self.display.unregister()
 
-        if not self.display.in_error and not args.log:
-            os.remove(self.display.log_file)
+    def search(self, query, page=1, limit=10):
+        """Search for books on O'Reilly. Returns (results_list, total_count, has_next_page)."""
+        response = self.requests_provider(
+            SAFARI_BASE_URL + "/api/v2/search/",
+            params={"query": query, "page": page, "limit": limit, "formats": "book"}
+        )
+        if response == 0:
+            self.display.exit("Search: unable to reach the search API.")
+            return [], 0, False
+
+        if response.status_code != 200:
+            self.display.exit("Search: API returned status %d: %s" % (response.status_code, response.text[:200]))
+            return [], 0, False
+
+        data = response.json()
+        results = data.get("results", [])
+        total = data.get("total", 0)
+        next_page = data.get("next") is not None
+
+        return results, total, next_page
+
+    @staticmethod
+    def format_search_result(idx, result):
+        """Format a single search result for display."""
+        title = result.get("title", "Unknown")
+        authors = ", ".join(result.get("authors", [])) or "Unknown"
+        book_id = result.get("archive_id", "?")
+        year = result.get("issued", "")[:4] if result.get("issued") else "n/a"
+        pages = result.get("virtual_pages", "?")
+        publisher = ", ".join(result.get("publishers", [])) or "Unknown"
+
+        line1 = "[%d] %s" % (idx, title)
+        line2 = "    by %s | ISBN: %s | %s | %s pages" % (authors, book_id, year, pages)
+
+        return line1, line2
 
     def handle_cookie_update(self, set_cookie_headers):
         for morsel in set_cookie_headers:
@@ -700,12 +741,13 @@ class SafariBooks:
                 cookie_key, cookie_value = morsel.split(";")[0].split("=")
                 self.session.cookies.set(cookie_key, cookie_value)
 
-    def requests_provider(self, url, is_post=False, data=None, perform_redirect=True, **kwargs):
+    def requests_provider(self, url, is_post=False, data=None, perform_redirect=True, params=None, **kwargs):
         try:
             response = getattr(self.session, "post" if is_post else "get")(
                 url,
                 data=data,
                 allow_redirects=False,
+                params=params,
                 **kwargs
             )
 
@@ -741,7 +783,7 @@ class SafariBooks:
         new_cred[1] = cred[sep + 1:]
         return new_cred
 
-    def do_login(self, email=None, password=None):
+    def do_login(self, email=None, password=None, no_cookies=False):
         """Log into O'Reilly using browser automation (Playwright).
         Akamai bot protection blocks direct HTTP login, so we use
         a real browser to authenticate and capture session cookies."""
@@ -770,7 +812,7 @@ class SafariBooks:
         # Apply cookies to the requests session
         self.session.cookies.update(cookies)
 
-        if not self.args.no_cookies:
+        if not no_cookies:
             json.dump(self.session.cookies.get_dict(), open(COOKIES_FILE, 'w'))
 
         self.display.info("Browser login complete, cookies captured.", state=True)
@@ -1584,68 +1626,165 @@ class SafariBooks:
         os.rename(zip_file + ".zip", os.path.join(self.BOOK_PATH, self.book_id) + ".epub")
 
 
-# MAIN
-if __name__ == "__main__":
-    arguments = argparse.ArgumentParser(prog="safaribooks.py",
-                                        description="Download and generate an EPUB of your favorite books"
-                                                    " from Safari Books Online.",
-                                        add_help=False,
-                                        allow_abbrev=False)
+# CLI with Click
+@click.group()
+@click.option('--cred', metavar='<EMAIL:PASS>', default=None, help='Credentials for auth login (e.g. "user@mail.com:password01").')
+@click.option('--login', is_flag=True, default=False, help='Open a browser for interactive login.')
+@click.option('--no-cookies', is_flag=True, default=False, help='Prevent saving session data to cookies.json.')
+@click.pass_context
+def cli(ctx, cred, login, no_cookies):
+    """Download and generate EPUB books from Safari Books Online."""
+    ctx.ensure_object(dict)
+    ctx.obj['no_cookies'] = no_cookies
+    
+    if cred and login:
+        click.echo("Error: --cred and --login are mutually exclusive.")
+        sys.exit(1)
+    
+    if cred:
+        parsed = SafariBooks.parse_cred(cred)
+        if not parsed:
+            click.echo("Error: invalid credential format. Expected 'email:password'.")
+            sys.exit(1)
+        ctx.obj['cred'] = parsed
+    elif login:
+        ctx.obj['cred'] = [None, None]
+    else:
+        ctx.obj['cred'] = None
 
-    login_arg_group = arguments.add_mutually_exclusive_group()
-    login_arg_group.add_argument(
-        "--cred", metavar="<EMAIL:PASS>", default=False,
-        help="Credentials used to perform the auth login on Safari Books Online."
-             " Es. ` --cred \"account_mail@mail.com:password01\" `."
-    )
-    login_arg_group.add_argument(
-        "--login", action='store_true',
-        help="Open a browser for interactive login to Safari Books Online."
-    )
 
-    arguments.add_argument(
-        "--no-cookies", dest="no_cookies", action='store_true',
-        help="Prevent your session data to be saved into `cookies.json` file."
-    )
-    arguments.add_argument(
-        "--kindle", dest="kindle", action='store_true',
-        help="Add some CSS rules that block overflow on `table` and `pre` elements."
-             " Use this option if you're going to export the EPUB to E-Readers like Amazon Kindle."
-    )
-    arguments.add_argument(
-        "--preserve-log", dest="log", action='store_true', help="Leave the `info_XXXXXXXXXXXXX.log`"
-                                                                " file even if there isn't any error."
-    )
-    arguments.add_argument("--help", action="help", default=argparse.SUPPRESS, help='Show this help message.')
-    arguments.add_argument(
-        "bookid", metavar='<BOOK ID>',
-        help="Book digits ID that you want to download. You can find it in the URL (X-es):"
-             " `" + SAFARI_BASE_URL + "/library/view/book-name/XXXXXXXXXXXXX/`"
-    )
+@cli.command()
+@click.argument('book_id')
+@click.option('--kindle', is_flag=True, default=False, help='Add CSS rules for Kindle compatibility.')
+@click.option('--preserve-log', is_flag=True, default=False, help='Keep the log file even without errors.')
+@click.pass_context
+def download(ctx, book_id, kindle, preserve_log):
+    """Download a book by its ID and generate an EPUB."""
+    sb = SafariBooks(display=Display("info_%s.log" % escape(book_id)))
+    sb.display.intro()
+    sb.authenticate(cred=ctx.obj['cred'], no_cookies=ctx.obj['no_cookies'])
+    
+    # Save cookies after successful auth
+    if not ctx.obj['no_cookies']:
+        json.dump(sb.session.cookies.get_dict(), open(COOKIES_FILE, "w"))
+    
+    sb.download(book_id, kindle=kindle, preserve_log=preserve_log)
 
-    args_parsed = arguments.parse_args()
-    if args_parsed.cred or args_parsed.login:
-        # Re-enable credential-based login with browser automation
-        # (Playwright bypasses Akamai bot protection)
-        user_email = ""
-        pre_cred = ""
 
-        if args_parsed.cred:
-            pre_cred = args_parsed.cred
-
+@cli.command()
+@click.argument('query', nargs=-1, required=True)
+@click.option('--page', default=1, help='Page number for search results.')
+@click.option('--limit', default=10, help='Number of results per page.')
+@click.pass_context
+def search(ctx, query, page, limit):
+    """Search for books on Safari Books Online and download by selection."""
+    query_str = ' '.join(query)
+    
+    sb = SafariBooks(display=Display("info_search.log"))
+    sb.display.intro()
+    sb.authenticate(cred=ctx.obj['cred'], no_cookies=ctx.obj['no_cookies'])
+    
+    # Save cookies after successful auth
+    if not ctx.obj['no_cookies']:
+        json.dump(sb.session.cookies.get_dict(), open(COOKIES_FILE, "w"))
+    
+    # Interactive search loop
+    current_page = page
+    while True:
+        click.echo(click.style("\nSearching for: '%s' (page %d)" % (query_str, current_page), fg='yellow'))
+        results, total, has_next = sb.search(query_str, page=current_page, limit=limit)
+        
+        if not results:
+            click.echo("No results found.")
+            return
+        
+        click.echo(click.style("Found %d results. Showing page %d:" % (total, current_page), fg='green'))
+        click.echo("-" * 60)
+        
+        offset = (current_page - 1) * limit
+        for i, r in enumerate(results):
+            idx = offset + i + 1
+            line1, line2 = SafariBooks.format_search_result(idx, r)
+            click.echo(click.style(line1, fg='cyan'))
+            click.echo(line2)
+            click.echo()
+        
+        click.echo("-" * 60)
+        prompt = "Enter number to download"
+        if has_next:
+            prompt += ", 'n' for next page"
+        prompt += ", 'q' to quit"
+        
+        choice = click.prompt(prompt, default='').strip()
+        
+        if choice.lower() == 'q':
+            click.echo("Bye!")
+            return
+        
+        if choice.lower() == 'n' and has_next:
+            current_page += 1
+            continue
+        
+        # Try to parse as a number
+        try:
+            num = int(choice)
+            if num < 1 or num > offset + len(results):
+                if num > offset + len(results):
+                    click.echo("Number out of range.")
+                elif num < 1:
+                    click.echo("Please enter a positive number.")
+                continue
+        except (ValueError, TypeError):
+            click.echo("Invalid input.")
+            continue
+        
+        # Find the selected book
+        selected_idx = num - 1
+        selected_offset = (current_page - 1) * limit
+        result_idx = selected_idx - selected_offset
+        
+        if result_idx < 0 or result_idx >= len(results):
+            # The selected number might be from a previous page we don't have
+            # Re-fetch that page
+            result_page = (selected_idx // limit) + 1
+            result_page_offset = (result_page - 1) * limit
+            new_results, _, _ = sb.search(query_str, page=result_page, limit=limit)
+            result_idx = selected_idx - result_page_offset
+            if result_idx < 0 or result_idx >= len(new_results):
+                click.echo("Number out of range.")
+                continue
+            selected = new_results[result_idx]
         else:
-            # --login means interactive browser mode: no pre-filled credentials
-            args_parsed.cred = [None, None]
-            SafariBooks(args_parsed)
-            sys.exit(0)
+            selected = results[result_idx]
+        
+        # Show full details and confirm
+        book_id = selected.get('archive_id', selected.get('isbn', ''))
+        title = selected.get('title', 'Unknown')
+        authors = ', '.join(selected.get('authors', [])) or 'Unknown'
+        publisher = ', '.join(selected.get('publishers', [])) or 'Unknown'
+        year = selected.get('issued', '')[:4] if selected.get('issued') else 'n/a'
+        pages = selected.get('virtual_pages', '?')
+        description = re.sub(r'<[^>]+>', '', selected.get('description', '')).strip()
+        if len(description) > 500:
+            description = description[:500] + '...'
+        
+        click.echo(click.style("\n" + "=" * 60, fg='yellow'))
+        click.echo(click.style("Title: ", fg='yellow') + title)
+        click.echo(click.style("Authors: ", fg='yellow') + authors)
+        click.echo(click.style("Publisher: ", fg='yellow') + publisher)
+        click.echo(click.style("Year: ", fg='yellow') + year)
+        click.echo(click.style("Pages: ", fg='yellow') + str(pages))
+        click.echo(click.style("ID: ", fg='yellow') + book_id)
+        click.echo(click.style("Description: ", fg='yellow'))
+        click.echo(description)
+        click.echo(click.style("=" * 60, fg='yellow'))
+        
+        if click.confirm('Download this book?'):
+            sb.download(book_id)
+            return
+        else:
+            click.echo("Cancelled. Returning to search results...\n")
 
-        # --cred mode: parse the provided email:password
-        parsed_cred = SafariBooks.parse_cred(pre_cred)
-        if not parsed_cred:
-            arguments.error("invalid credential: %s" % args_parsed.cred)
 
-        args_parsed.cred = parsed_cred
-
-    SafariBooks(args_parsed)
-    # Hint: do you want to download more then one book once, initialized more than one instance of `SafariBooks`...
-    sys.exit(0)
+if __name__ == "__main__":
+    cli()
