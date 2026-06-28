@@ -699,10 +699,16 @@ class SafariBooks:
         self.display.unregister()
 
     def search(self, query, page=1, limit=10):
-        """Search for books on O'Reilly. Returns (results_list, total_count, has_next_page)."""
+        """Search for books on O'Reilly. Returns (results_list, total_count, has_next_page).
+
+        The `page` argument is 1-indexed from the caller's perspective (the
+        first page is page 1). The O'Reilly /api/v2/search/ endpoint is
+        0-indexed (the first page is page 0), so we translate here.
+        """
+        api_page = max(0, page - 1)
         response = self.requests_provider(
             SAFARI_BASE_URL + "/api/v2/search/",
-            params={"query": query, "page": page, "limit": limit, "formats": "book"}
+            params={"query": query, "page": api_page, "limit": limit, "formats": "book"}
         )
         if response == 0:
             self.display.exit("Search: unable to reach the search API.")
