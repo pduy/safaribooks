@@ -823,25 +823,57 @@ class SafariBooks:
 
         self.display.info("Browser login complete, cookies captured.", state=True)
 
-    def check_login(self):
+    def check_login(self, _retried=False):
         response = self.requests_provider(PROFILE_URL, perform_redirect=False)
 
         if response == 0:
             self.display.exit("Login: unable to reach Safari Books Online. Try again...")
+            return
 
-        elif response.status_code == 302:
-            # 302 redirect from profile means cookies may be expired;
-            # try to proceed anyway since the book API might still work
+        # A 302 to the O'Reilly login page means the session cookies are
+        # missing or expired.  Instead of aborting, re-launch the browser
+        # login flow so the user can sign in again (the script prints the
+        # login URLs and opens a browser window), then re-verify.
+        if response.is_redirect and self._is_login_redirect(response):
+            if _retried:
+                self.display.exit(
+                    "Authentication: session is still expired after re-login.\n"
+                    "    Please make sure you signed in to https://learning.oreilly.com\n"
+                    "    (and that your subscription is active), then run this script again."
+                )
+                return
+            self.display.warning(
+                "Your O'Reilly session cookies are missing or expired.\n"
+                "    Re-launching the browser login...\n"
+                "    Please log in to https://learning.oreilly.com in the browser window\n"
+                "    that opens. Once you reach the dashboard, the script will continue\n"
+                "    automatically."
+            )
+            self.do_login(None, None)
+            self.check_login(_retried=True)
+            return
+
+        if response.status_code == 302:
+            # Other 302 redirect: cookies may be stale, but the book API may
+            # still work, so try to proceed.
             self.display.info("Session may be expired, trying anyway...")
+            return
 
-        elif response.status_code != 200:
+        if response.status_code != 200:
             self.display.exit("Authentication issue: unable to access profile page.")
+            return
 
-        elif "user_type\":\"Expired\"" in response.text:
+        if "user_type\":\"Expired\"" in response.text:
             self.display.exit("Authentication issue: account subscription expired.")
+            return
 
-        else:
-            self.display.info("Successfully authenticated.", state=True)
+        self.display.info("Successfully authenticated.", state=True)
+
+    @staticmethod
+    def _is_login_redirect(response):
+        """Return True if `response` redirects to an O'Reilly login/sign-in page."""
+        location = (response.headers.get("Location") or "").lower()
+        return bool(location) and ("login" in location or "sign-in" in location or "signin" in location)
 
     def get_book_info(self):
         # Try v1 API first (may still work for some books)
@@ -1120,13 +1152,51 @@ class SafariBooks:
 
         return "default_cover." + file_ext
 
-    def get_html(self, url):
-        response = self.requests_provider(url)
-        if response == 0 or response.status_code != 200:
+    def get_html(self, url, _redirect_depth=0):
+        response = self.requests_provider(url, perform_redirect=False)
+        if response == 0:
             self.display.exit(
                 "Crawler: error trying to retrieve this page: %s (%s)\n    From: %s" %
                 (self.filename, self.chapter_title, url)
             )
+            return
+
+        # If the chapter endpoint redirected to the O'Reilly login page,
+        # the session cookies have expired.  Rather than abort with an
+        # obscure parse error later, re-launch the browser login flow so
+        # the user can sign in again (login URLs are printed, a browser
+        # window opens), then fail clearly if it still doesn't work.
+        if response.is_redirect and self._is_login_redirect(response):
+            self.display.warning(
+                "Chapter download redirected to the O'Reilly login page.\n"
+                "    Your session cookies have expired. Re-launching the browser login...\n"
+                "    Please log in to https://learning.oreilly.com in the browser window\n"
+                "    that opens. Once you reach the dashboard, run this script again."
+            )
+            self.do_login(None, None)
+            self.display.exit(
+                "Crawler: session refreshed. Please re-run this download."
+            )
+            return
+
+        # Follow a normal (non-login) redirect manually so we can still
+        # sniff out login redirects above; requests_provider would otherwise
+        # have followed everything transparently.
+        if response.is_redirect:
+            if _redirect_depth >= 5:
+                self.display.exit(
+                    "Crawler: too many redirects while retrieving: %s (%s)\n    From: %s" %
+                    (self.filename, self.chapter_title, url)
+                )
+                return
+            return self.get_html(response.next.url, _redirect_depth=_redirect_depth + 1)
+
+        if response.status_code != 200:
+            self.display.exit(
+                "Crawler: error trying to retrieve this page: %s (%s)\n    From: %s" %
+                (self.filename, self.chapter_title, url)
+            )
+            return
 
         root = None
         try:
@@ -1138,20 +1208,40 @@ class SafariBooks:
                 "Crawler: error trying to parse this page: %s (%s)\n    From: %s" %
                 (self.filename, self.chapter_title, url)
             )
+            return
 
-        # Check if the content appears truncated. With proper auth cookies
-        # (orm-jwt), the API returns full chapter content. Without auth,
-        # only a 3-paragraph preview is served.
+        # If a non-login page still lacks the book-content wrapper, it is
+        # usually an auth-expired preview.  Treat that as an auth failure
+        # (re-launch browser login) instead of an opaque "corrupted" error.
         book_content = root.xpath("//div[@id='sbo-rt-content']")
-        if len(book_content) == 1:
-            content_text = book_content[0].text_content().strip()
-            if len(content_text) < 500:
+        if not len(book_content):
+            looks_like_login = ("oreilly.com/accounts/login" in response.url
+                                 or "/member/sign-in" in response.url
+                                 or "sign in" in response.text[:2000].lower())
+            if looks_like_login:
                 self.display.warning(
-                    "Chapter content appears truncated (only %d chars). "
-                    "This usually means your O'Reilly session cookies are missing or expired. "
-                    "Try logging into O'Reilly in your browser and run again."
-                    % len(content_text)
+                    "Chapter content is behind the O'Reilly login wall.\n"
+                    "    Your session cookies have expired. Re-launching the browser login...\n"
+                    "    Please log in to https://learning.oreilly.com in the browser window\n"
+                    "    that opens. Once you reach the dashboard, run this script again."
                 )
+                self.do_login(None, None)
+                self.display.exit(
+                    "Crawler: session refreshed. Please re-run this download."
+                )
+                return
+            self.display.exit(
+                "Parser: book content's corrupted or not present: %s (%s)" %
+                (self.filename, self.chapter_title)
+            )
+            return
+
+        # Note: short chapter text (e.g. covers, half-titles, tables of
+        # contents, copyright pages) is normal and NOT a sign that cookies
+        # are expired.  The v2 epub files endpoint serves full content even
+        # unauthenticated, so a small text length here just means the page
+        # legitimately has little text (often only an image).  We therefore
+        # no longer warn that the session is expired in this case.
 
         return root
 
@@ -1345,7 +1435,13 @@ class SafariBooks:
 
     def save_page_html(self, contents):
         self.filename = self.filename.replace(".html", ".xhtml")
-        open(os.path.join(self.BOOK_PATH, "OEBPS", self.filename), "wb") \
+        out_path = os.path.join(self.BOOK_PATH, "OEBPS", self.filename)
+        # The v2 epub API can return nested filenames like "xhtml/01_Cover.xhtml",
+        # so make sure the parent directory exists before writing.
+        out_dir = os.path.dirname(out_path)
+        if out_dir and not os.path.isdir(out_dir):
+            os.makedirs(out_dir, exist_ok=True)
+        open(out_path, "wb") \
             .write(self.BASE_HTML.format(contents[0], contents[1]).encode("utf-8", 'xmlcharrefreplace'))
         self.display.log("Created: %s" % self.filename)
 
