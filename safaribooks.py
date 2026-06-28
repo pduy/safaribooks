@@ -1094,8 +1094,17 @@ class SafariBooks:
                 break
 
             for ch in results:
-                # Convert v2 format to v1-compatible format
+                # Convert v2 format to v1-compatible format.
+                # The v2 reference_id looks like "<isbn>-/xhtml/01_Cover.xhtml"; we
+                # strip the leading "<isbn>-" prefix and then keep only the
+                # basename.  The rest of the pipeline assumes a FLAT layout
+                # under OEBPS/ (chapters next to Images/ and Styles/, relative
+                # image links like "Images/fig1.jpg" resolved against OEBPS/),
+                # so nested paths such as "xhtml/01_Cover.xhtml" must be
+                # flattened to "01_Cover.xhtml" or EPUB readers won't find the
+                # images (they'd resolve them relative to OEBPS/xhtml/).
                 filename = ch["reference_id"].split("-", 1)[1].lstrip("/") if "-" in ch["reference_id"] else ch["reference_id"]
+                filename = filename.split("/")[-1]
                 ourn = ch["ourn"]
                 
                 chapter_data = {
@@ -1435,13 +1444,7 @@ class SafariBooks:
 
     def save_page_html(self, contents):
         self.filename = self.filename.replace(".html", ".xhtml")
-        out_path = os.path.join(self.BOOK_PATH, "OEBPS", self.filename)
-        # The v2 epub API can return nested filenames like "xhtml/01_Cover.xhtml",
-        # so make sure the parent directory exists before writing.
-        out_dir = os.path.dirname(out_path)
-        if out_dir and not os.path.isdir(out_dir):
-            os.makedirs(out_dir, exist_ok=True)
-        open(out_path, "wb") \
+        open(os.path.join(self.BOOK_PATH, "OEBPS", self.filename), "wb") \
             .write(self.BASE_HTML.format(contents[0], contents[1]).encode("utf-8", 'xmlcharrefreplace'))
         self.display.log("Created: %s" % self.filename)
 
